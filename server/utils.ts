@@ -1,18 +1,16 @@
 ﻿import * as cheerio from "cheerio";
 import { pipeline, env } from "@xenova/transformers";
 
-// Nonaktifkan pencarian model lokal jika tidak ada, paksa download dari remote
 env.allowLocalModels = false;
 env.useBrowserCache = false;
 
-// Initialize the summarization pipeline
 let summarizer: any = null;
 
 export async function getSummarizer() {
   if (!summarizer) {
     console.log("Loading Indonesian summarization model...");
     try {
-      summarizer = await pipeline('summarization', 'Xenova/distilbart-cnn-12-6');
+      summarizer = await pipeline('summarization', 'Xenova/indobenchmark/indobart-v2');
       console.log("Model loaded successfully.");
     } catch (error) {
       console.error("Failed to load model:", error);
@@ -38,13 +36,10 @@ export async function fetchArticleContent(url: string): Promise<{ title: string;
     const html = await response.text();
     const $ = cheerio.load(html);
 
-    // Basic extraction heuristics
     const title = $('head title').text() || $('h1').first().text() || "No title found";
     
-    // Remove scripts, styles, etc.
     $('script, style, nav, footer, header, aside').remove();
     
-    // Try to find the main article content
     let content = $('article').text();
     if (!content || content.length < 100) {
       content = $('main').text();
@@ -53,7 +48,6 @@ export async function fetchArticleContent(url: string): Promise<{ title: string;
       content = $('body').text();
     }
 
-    // Clean up whitespace
     content = content.replace(/\s+/g, ' ').trim();
     
     return { title, content };

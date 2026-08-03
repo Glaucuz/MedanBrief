@@ -49,10 +49,6 @@ async function buildAll() {
     format: "cjs",
     outfile: "dist/index.cjs",
     define: {
-      __dirname: 'require("path").dirname(process.argv[1])',
-      __filename: 'process.argv[1]',
-    },
-    define: {
       "process.env.NODE_ENV": '"production"',
     },
     minify: true,

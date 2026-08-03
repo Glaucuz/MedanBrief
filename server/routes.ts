@@ -8,16 +8,28 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import * as cheerio from "cheerio";
 
-// Hugging Face inference settings — provide `HF_API_KEY` and optional `HF_MODEL`
-// Example: HF_MODEL=sshleifer/distilbart-cnn-12-6
-const HF_MODEL = process.env.HF_MODEL || "sshleifer/distilbart-cnn-12-6";
-const HF_API_KEY = process.env.HF_API_KEY;
+const HF_MODEL = process.env.HF_MODEL || "cahya/t5-base-indonesian-summarization-cased";
+const HF_API_KEY = process.env.HF_API_KEY || process.env.HUGGINGFACEHUB_API_TOKEN || process.env.HF_TOKEN;
 
-/**
- * Mengambil konten artikel dari URL yang diberikan.
- * Menggunakan cheerio untuk melakukan scraping HTML dan mengekstrak
- * judul serta isi utama artikel.
- */
+const ALLOWED_DOMAINS = [
+  "medan.tribunnews.com",
+  "www.detik.com",
+  "detik.com",
+  "www.kompas.com",
+  "kompas.com",
+  "waspada.co.id",
+  "www.waspada.co.id",
+];
+
+function isAllowedUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return ALLOWED_DOMAINS.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
+}
+
 async function fetchArticleContent(url: string): Promise<{ title: string; content: string }> {
   try {
     const response = await fetch(url, {
@@ -37,14 +49,12 @@ async function fetchArticleContent(url: string): Promise<{ title: string; conten
     const html = await response.text();
     const $ = cheerio.load(html);
 
-    // Ekstrak judul artikel
     const title =
       $('meta[property="og:title"]').attr("content") ||
       $("head title").text() ||
       $("h1").first().text() ||
       "Judul tidak ditemukan";
 
-    // Bersihkan title dari artifact seperti ".com - Author"
     const cleanTitle = title
       .replace(/\b(?:[A-Za-z0-9-]+\.)+(?:com|co\.id|id|net|org|info|biz|news)\b/gi, " ")
       .replace(/\s+\.com(?:\s|-|$)/gi, " ")
@@ -56,8 +66,6 @@ async function fetchArticleContent(url: string): Promise<{ title: string; conten
       .replace(/^[a-zA-Z0-9\-.]+ - /i, "")
       .trim();
 
-    // Hapus elemen yang tidak relevan
-   // Hapus elemen yang tidak diperlukan
 $(
   `
   script,
@@ -78,7 +86,6 @@ $(
 `
 ).remove();
 
-// Selector portal berita
 const selectors = [
   ".txt-article",
   ".side-article",
@@ -102,12 +109,10 @@ for (const selector of selectors) {
   }
 }
 
-// fallback
 if (!content) {
   content = $("body").text();
 }
 
-// cleaning tambahan
 content = content
   .replace(/GTM-[A-Z0-9]+/g, "")
   .replace(/display:none/gi, "")
@@ -115,14 +120,10 @@ content = content
   .replace(/iframe/gi, "")
   .replace(/Google Tag Manager/gi, "")
   .replace(/ADVERTISEMENT/gi, "")
-  // Remove URLs (http, https, www)
   .replace(/https?:\/\/[^\s]+/gi, "")
   .replace(/www\.[^\s]+/gi, "")
-  // Remove domain tokens like MEDAN.KOMPAS.com, Kompas.com, etc.
   .replace(/\b(?:[A-Za-z0-9-]+\.)+(?:com|co\.id|id|net|org|info|biz|news)\b/gi, "")
-  // Remove patterns like "source.com - Author Name" 
   .replace(/[a-zA-Z0-9\-.]+ - /gi, "")
-  // Remove domain suffixes and TLDs (with various separators: space, dash, or end)
   .replace(/\s+\.com(?:\s|-|$)/gi, " ")
   .replace(/\s+\.co\.id(?:\s|-|$)/gi, " ")
   .replace(/\s+\.id(?:\s|-|$)/gi, " ")
@@ -130,7 +131,6 @@ content = content
   .replace(/\s+\.org(?:\s|-|$)/gi, " ")
   .replace(/\s+\.info(?:\s|-|$)/gi, " ")
   .replace(/\s+\.news(?:\s|-|$)/gi, " ")
-  // Normalize whitespace
   .replace(/\s+/g, " ")
   .trim(); 
 
@@ -146,48 +146,11 @@ content = content
   }
 }
 
-/**
- * Membuat ringkasan artikel menggunakan Groq (LLaMA 3).
- *
- * Langkah-langkah Proses (untuk Skripsi):
- * 1. Tokenisasi: Teks input dikonversi menjadi token oleh model LLaMA 3.
- * 2. Truncation: Konten dipotong agar tidak melebihi batas context window model.
- * 3. Inferensi (Decoder-only / Autoregressive):
- *    - Model LLaMA 3 memproses seluruh konteks input sekaligus menggunakan
- *      attention mechanism.
- *    - Output dihasilkan token demi token secara autoregresif di atas
- *      hardware Groq LPU (Language Processing Unit).
- * 4. Prompt Engineering: System prompt dirancang agar model menghasilkan
- *    ringkasan dalam Bahasa Indonesia yang informatif dan ringkas.
- */
-function extractiveSummary(title: string, content: string): string {
-  // Simple extractive fallback: pick up to 3 leading sentences of reasonable length
-  try {
-    const text = `${title}. ${content}`.replace(/\s+/g, " ").trim();
-    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-    const good = sentences.filter((s) => s.trim().length > 30);
-    const chosen = good.length ? good.slice(0, 3) : sentences.slice(0, 3);
-    const joined = chosen.join(" ").trim();
-    if (joined.length > 0) return cleanSummaryText(joined);
-    return cleanSummaryText(text.slice(0, 300) + (text.length > 300 ? "..." : ""));
-  } catch (e) {
-    return cleanSummaryText((title || "") + " - " + (content.slice(0, 280) || ""));
-  }
-}
-
-/**
- * Membersihkan summary text dari artefak yang tidak diinginkan
- * seperti domain suffixes, URLs, dan token aneh lainnya
- */
 function cleanSummaryText(text: string): string {
   return text
-    // Remove URLs
     .replace(/https?:\/\/[^\s]+/gi, "")
     .replace(/www\.[^\s]+/gi, "")
-    // Remove domain tokens like MEDAN.KOMPAS.com, Kompas.com, etc.
     .replace(/\b(?:[A-Za-z0-9-]+\.)+(?:com|co\.id|id|net|org|info|biz|news)\b/gi, "")
-    // Remove domain suffixes with various separators (space, dash, dots)
-    // Pattern: .com, .co.id, .id, etc. followed by space, dash, or end of string
     .replace(/\s+\.com(?:\s|-|$)/gi, " ")
     .replace(/\s+\.co\.id(?:\s|-|$)/gi, " ")
     .replace(/\s+\.id(?:\s|-|$)/gi, " ")
@@ -196,27 +159,21 @@ function cleanSummaryText(text: string): string {
     .replace(/\s+\.info(?:\s|-|$)/gi, " ")
     .replace(/\s+\.biz(?:\s|-|$)/gi, " ")
     .replace(/\s+\.news(?:\s|-|$)/gi, " ")
-    // Remove patterns like "source.com - Author" at the beginning
     .replace(/^[a-zA-Z0-9\-.]+ - /i, "")
-    // Clean up multiple spaces and normalize
     .replace(/\s+/g, " ")
     .trim();
 }
 
 async function summarizeWithHf(title: string, content: string): Promise<string> {
-  // If HF key not provided, fall back to extractive summarizer to avoid 401/500
-  if (!HF_API_KEY) {
-    console.warn("HF_API_KEY not set — using extractive fallback summarizer.");
-    return extractiveSummary(title, content);
-  }
-
-  // Truncate content to a reasonable length for the model's context window
-const truncatedContent =
-  content.split(" ").slice(0, 800).join(" ");
+  const truncatedContent = content.split(" ").slice(0, 3000).join(" ");
   const input = `${title}\n\n${truncatedContent}`;
 
+  if (!HF_API_KEY) {
+    throw new Error("HF_API_KEY tidak ditemukan. Tambahkan HF_API_KEY ke file .env");
+  }
+
   try {
-    const res = await fetch(`https://api-inference.huggingface.co/models/${HF_MODEL}`, {
+    const res = await fetch(`https://router.huggingface.co/hf-inference/models/${HF_MODEL}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${HF_API_KEY}`,
@@ -225,8 +182,13 @@ const truncatedContent =
       body: JSON.stringify({
         inputs: input,
         parameters: {
-          max_length: 256,
-          min_length: 30,
+          max_length: 1000,
+          max_new_tokens: 512,
+          min_length: 80,
+          num_beams: 6,
+          length_penalty: 0.9,
+          no_repeat_ngram_size: 3,
+          early_stopping: true,
           do_sample: false,
         },
       }),
@@ -234,13 +196,11 @@ const truncatedContent =
 
     if (!res.ok) {
       const txt = await res.text();
-      console.warn(`HF inference returned ${res.status}: ${txt}. Falling back to extractive summarizer.`);
-      return extractiveSummary(title, content);
+      throw new Error(`Hugging Face inference gagal (${res.status}): ${txt}`);
     }
 
     const data = await res.json();
 
-    // The inference API may return an array with `summary_text` or plain string
     let summaryText = "";
     if (Array.isArray(data)) {
       if (data[0] && typeof data[0] === "object" && "summary_text" in data[0]) {
@@ -260,14 +220,13 @@ const truncatedContent =
 
     summaryText = String(summaryText).trim();
     if (!summaryText) {
-      console.warn("HF returned empty summary — using extractive fallback.");
-      return extractiveSummary(title, content);
+      throw new Error("Hugging Face mengembalikan ringkasan kosong.");
     }
 
     return cleanSummaryText(summaryText);
   } catch (err) {
     console.error("Error calling Hugging Face inference API:", err);
-    return extractiveSummary(title, content);
+    throw err;
   }
 }
 
@@ -276,30 +235,30 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
-  // GET /api/summaries - Ambil semua ringkasan yang tersimpan
   app.get(api.summaries.list.path, async (req, res) => {
     const summaries = await storage.getSummaries();
     res.json(summaries);
   });
 
-  // POST /api/summarize - Proses URL berita dan buat ringkasan
   app.post(api.summaries.summarize.path, async (req, res) => {
     try {
-      // 1. Validasi input
       const input = api.summaries.summarize.input.parse(req.body);
       const { url } = input;
 
-      // 2. Ambil konten artikel dari URL
+      if (!isAllowedUrl(url)) {
+        return res.status(400).json({
+          message: "Hanya artikel dari medan.tribunnews.com, detik.com, kompas.com, dan waspada.co.id yang dapat diproses.",
+        });
+      }
+
       const { title, content } = await fetchArticleContent(url);
 
       console.log("TITLE:", title);
       console.log("CONTENT PREVIEW:");
       console.log(content.substring(0, 1500));
 
-      // 3. Buat ringkasan menggunakan Hugging Face Inference API
       const summaryText = await summarizeWithHf(title, content);
 
-      // 4. Simpan hasil ke storage (JSON file)
       const summary = await storage.createSummary({
         url,
         title,
@@ -354,7 +313,6 @@ export async function registerRoutes(
             const normalized = new URL(`https://${raw}`).href;
             candidateUrls.add(normalized);
           } catch {
-            // ignore invalid strings
           }
         }
       };
@@ -369,9 +327,9 @@ export async function registerRoutes(
         });
       }
 
-      const urls = Array.from(candidateUrls);
+      const urls = Array.from(candidateUrls).filter(isAllowedUrl);
       if (!urls.length) {
-        return res.status(400).json({ message: "Tidak ada URL berita yang valid ditemukan di file Excel." });
+        return res.status(400).json({ message: "Tidak ada URL dari website yang diizinkan (medan.tribunnews.com, detik.com, kompas.com, waspada.co.id) ditemukan di file Excel." });
       }
 
       const limit = pLimit(3);
